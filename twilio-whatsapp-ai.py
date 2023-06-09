@@ -16,7 +16,8 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = 'pdfs'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
+pdf_exists = False
+VectorStore = None
 @app.route('/message', methods=['POST'])
 def whatsapp():
     load_dotenv()
@@ -28,8 +29,12 @@ def whatsapp():
     twilio_phone_number = os.getenv('TWILIO_PHONE_NUMBER')
     sender_phone_number = request.values.get('From', '')
     media_content_type = request.values.get('MediaContentType0')
+    print(media_content_type)
     pdf_url = request.values.get('MediaUrl0')
+    response = None
     if media_content_type == 'application/pdf':
+        global pdf_exists, VectorStore
+        pdf_exists = True
         response = requests.get(pdf_url)
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
             temp_file.write(response.content)
@@ -47,27 +52,25 @@ def whatsapp():
             embeddings = OpenAIEmbeddings()
             VectorStore = FAISS.from_texts(chunks, embedding=embeddings)
             response = "Recieved, You can now ask your Questions"
+    elif pdf_exists:
+        question = request.values.get('Body')
+        if pdf_exists:
+            docs = VectorStore.similarity_search(query=question, k=3)
+            llm = OpenAI(model_name="gpt-3.5-turbo", temperature=0.4)
+            chain = load_qa_chain(llm, chain_type="stuff")
+            answer = chain.run(input_documents=docs, question=question)
             message = client.messages.create(
-                body=response,
+                body=answer,
                 from_=twilio_phone_number,
                 to=sender_phone_number
             )
-            while True:
-                question = request.values.get('Body')
-                docs = VectorStore.similarity_search(query=question, k=3)
-                llm = OpenAI(model_name="gpt-3.5-turbo", temperature=0.4)
-                chain = load_qa_chain(llm, chain_type="stuff")
-                answer = chain.run(input_documents=docs, question=question)
-                reply = client.messages.create(
-                    body=answer,
-                    from_=twilio_phone_number,
-                    to=sender_phone_number
-                )
-                if answer.endswith("?"):
-                    break
-
+            return str(message.sid)
+        else:
+            response = "No PDF file uploaded."
     else:
+        print(media_content_type)
         response = "The media content type is not application/pdf"
+    print(media_content_type)
     message = client.messages.create(
         body=response,
         from_=twilio_phone_number,
